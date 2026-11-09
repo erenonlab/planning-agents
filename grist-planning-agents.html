@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Planning des agents</title>
+<script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+<style>
+  :root { --ink:#1f2a37; --muted:#6b7280; --line:#e5e7eb; --bg:#fff; --soft:#f6f7f9;
+    --pres:#2f9e6e; --tele:#3b82c4; --conge:#e08a2c; --abs:#9ca3af; --now:#d6336c; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:12px 14px; font:14px/1.4 "Segoe UI", system-ui, sans-serif; color:var(--ink); background:var(--bg); }
+  header { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px; }
+  header h1 { font-size:17px; margin:0 0 0 6px; text-transform:capitalize; font-weight:600; }
+  button, select, input { font:inherit; color:inherit; }
+  button { border:1px solid var(--line); background:var(--soft); border-radius:6px; padding:5px 12px; cursor:pointer; }
+  button:hover { background:#eceff3; }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline:2px solid var(--tele); outline-offset:1px; }
+  .counts { display:flex; gap:8px; flex-wrap:wrap; margin-left:auto; }
+  .chip { display:flex; align-items:center; gap:6px; padding:3px 10px; border-radius:99px; background:var(--soft); font-size:13px; }
+  .dot { width:10px; height:10px; border-radius:3px; display:inline-block; }
+  .grid { display:grid; grid-template-columns:110px 1fr; position:relative; }
+  .axis { position:relative; height:22px; border-bottom:1px solid var(--line); }
+  .tick { position:absolute; top:0; font-size:11px; color:var(--muted); transform:translateX(-50%); }
+  .name { height:34px; display:flex; align-items:center; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; border-bottom:1px solid var(--line); padding-right:8px; }
+  .track { position:relative; height:34px; border-bottom:1px solid var(--line);
+    background-image:linear-gradient(to right, var(--line) 1px, transparent 1px); background-size:calc(100%/var(--hours)) 100%; }
+  .bar { position:absolute; top:5px; bottom:5px; border-radius:5px; color:#fff; font-size:11px; padding:0 6px; display:flex; align-items:center; overflow:hidden; white-space:nowrap; cursor:pointer; }
+  .bar.sel { outline:2px solid var(--ink); outline-offset:1px; }
+  .bar.pres { background:var(--pres); } .bar.tele { background:var(--tele); }
+  .bar.conge { background:var(--conge); } .bar.abs { background:var(--abs); }
+  .empty { position:absolute; left:8px; top:7px; font-size:12px; color:var(--muted); font-style:italic; }
+  #nowline { position:absolute; width:2px; background:var(--now); pointer-events:none; z-index:5; display:none; }
+  #nowline::before { content:""; position:absolute; top:-3px; left:-4px; width:10px; height:10px; border-radius:50%; background:var(--now); }
+  .legend { display:flex; gap:14px; margin-top:8px; font-size:12px; color:var(--muted); flex-wrap:wrap; }
+  .legend span { display:flex; align-items:center; gap:5px; }
+  #msg { margin:20px 0; color:var(--muted); }
+  .form { margin-top:14px; padding:12px; background:var(--soft); border-radius:8px; }
+  .form h2 { font-size:14px; margin:0 0 8px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; margin-bottom:8px; }
+  label, .field { display:flex; flex-direction:column; font-size:12px; color:var(--muted); gap:3px; }
+  select, input[type=date] { padding:5px 8px; border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--ink); }
+  .seg { display:flex; gap:4px; }
+  .seg button { display:flex; align-items:center; gap:5px; background:#fff; }
+  .seg button[aria-pressed=true] { border-color:var(--ink); box-shadow:inset 0 0 0 1px var(--ink); font-weight:600; }
+  .primary { background:var(--ink); color:#fff; border-color:var(--ink); }
+  .primary:hover { background:#374151; }
+  #status { font-size:13px; }
+  #status.err { color:#b42318; } #status.ok { color:#1a7f4b; }
+  #del { margin-top:8px; padding:8px 12px; border:1px solid var(--line); border-radius:8px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<header>
+  <button id="prev" aria-label="Jour précédent">◀</button>
+  <button id="today">Aujourd’hui</button>
+  <button id="next" aria-label="Jour suivant">▶</button>
+  <h1 id="title"></h1>
+  <div class="counts" id="counts"></div>
+</header>
+<div id="msg">En attente des données Grist…</div>
+<div class="grid" id="grid" style="display:none">
+  <div></div><div class="axis" id="axis"></div>
+  <div id="names"></div><div id="tracks" style="position:relative"></div>
+</div>
+<div class="legend">
+  <span><i class="dot" style="background:var(--pres)"></i>Présentiel</span>
+  <span><i class="dot" style="background:var(--tele)"></i>Télétravail</span>
+  <span><i class="dot" style="background:var(--conge)"></i>Congé</span>
+  <span><i class="dot" style="background:var(--abs)"></i>Absent</span>
+  <span>Cliquez sur une barre pour la supprimer</span>
+</div>
+
+<div id="del" hidden>
+  <span id="del-txt"></span>
+  <button class="primary" id="del-ok">Supprimer</button>
+  <button id="del-no">Annuler</button>
+</div>
+
+<section class="form">
+  <h2>Ajouter une disponibilité</h2>
+  <div class="row">
+    <label>Agent<select id="f-agent"></select></label>
+    <div class="field"><span>Statut</span><div class="seg" id="f-statut"></div></div>
+    <label>Du<input type="date" id="f-d1"></label>
+    <label>Jusqu’au (si plusieurs jours)<input type="date" id="f-d2"></label>
+    <label>De<select id="f-t1"></select></label>
+    <label>À<select id="f-t2"></select></label>
+  </div>
+  <div class="row">
+    <button id="p-day">Journée</button>
+    <button id="p-am">Matin</button>
+    <button id="p-pm">Après-midi</button>
+    <button class="primary" id="add">Ajouter</button>
+    <span id="status" role="status"></span>
+  </div>
+</section>
+
+<script>
+/* ===== À MODIFIER ===== */
+const AGENTS = ["Agent 1","Agent 2","Agent 3","Agent 4","Agent 5","Agent 6","Agent 7"];
+const STATUTS = [   // "v" doit être identique aux options de la colonne Statut dans Grist
+  { v:"Présentiel",  c:"pres"  },
+  { v:"Télétravail", c:"tele"  },
+  { v:"Congé",       c:"conge" },
+  { v:"Absent",      c:"abs"   }
+];
+const START = 7, END = 19;                       // plage affichée et heures proposées
+const PRESETS = { day:["08:30","17:30"], am:["08:30","12:00"], pm:["13:30","17:30"] };
+/* ===================== */
+
+const LABELS = Object.fromEntries(STATUTS.map(s => [s.c, s.v]));
+let rows = [], selected = null, chosen = null;
+let day = new Date(); day.setHours(0,0,0,0);
+const $ = id => document.getElementById(id);
+const key = d => d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
+const f2 = m => String(Math.floor(m/60)).padStart(2,"0")+":"+String(Math.round(m%60)).padStart(2,"0");
+
+function norm(s) {
+  s = String(s||"").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"");
+  if (s.includes("tele")) return "tele";
+  if (s.includes("conge") || s.includes("cp") || s.includes("rtt") || s.includes("vacances")) return "conge";
+  if (s.includes("pres") || s.includes("bureau") || s.includes("site")) return "pres";
+  return "abs";
+}
+const toMs = v => v == null || v === "" ? null : typeof v === "number" ? v*1000 : (isNaN(new Date(v)) ? null : new Date(v).getTime());
+
+/* ---------- Planning ---------- */
+function render() {
+  const ds = day.getTime(), nx = new Date(day); nx.setDate(nx.getDate()+1); const de = nx.getTime();
+  $("title").textContent = day.toLocaleDateString("fr-FR", { weekday:"long", day:"numeric", month:"long", year:"numeric" });
+  const seen = rows.map(r => String(r.Agent||"").trim()).filter(Boolean);
+  const agents = [...new Set([...AGENTS, ...seen])];
+  const H = END - START;
+
+  $("axis").innerHTML = "";
+  for (let h = START; h <= END; h++) {
+    const t = document.createElement("span"); t.className = "tick";
+    t.style.left = ((h-START)/H*100)+"%"; t.textContent = h+"h"; $("axis").appendChild(t);
+  }
+  $("names").innerHTML = ""; $("tracks").innerHTML = "";
+  const present = { pres:new Set(), tele:new Set(), conge:new Set(), abs:new Set() };
+
+  agents.forEach(a => {
+    const n = document.createElement("div"); n.className = "name"; n.textContent = a; n.title = a; $("names").appendChild(n);
+    const tr = document.createElement("div"); tr.className = "track"; tr.style.setProperty("--hours", H);
+    let any = false;
+    rows.filter(r => String(r.Agent||"").trim() === a).forEach(r => {
+      const s = toMs(r.Debut), e = toMs(r.Fin);
+      if (s == null || e == null || e <= s || !(s < de && e > ds)) return;
+      const from = (Math.max(s, ds)-ds)/60000, to = (Math.min(e, de)-ds)/60000;
+      const l = Math.max(from, START*60), rt = Math.min(to, END*60);
+      if (rt <= l) return;
+      any = true;
+      const st = norm(r.Statut); present[st].add(a);
+      const b = document.createElement("div"); b.className = "bar "+st+(selected && selected.id === r.id ? " sel" : "");
+      b.style.left = ((l-START*60)/(H*60)*100)+"%"; b.style.width = ((rt-l)/(H*60)*100)+"%";
+      b.textContent = LABELS[st]; b.title = a+" · "+LABELS[st]+" · "+f2(from)+" – "+f2(to);
+      b.onclick = () => { selected = { id:r.id, txt:a+" · "+LABELS[st]+" · "+f2(from)+" – "+f2(to) }; showDel(); render(); };
+      tr.appendChild(b);
+    });
+    if (!any) { const em = document.createElement("span"); em.className = "empty"; em.textContent = "Pas d’information"; tr.appendChild(em); }
+    $("tracks").appendChild(tr);
+  });
+
+  $("counts").innerHTML = ["pres","tele","conge"].map(s =>
+    `<span class="chip"><i class="dot" style="background:var(--${s})"></i>${LABELS[s]} : <b>${present[s].size}</b></span>`).join("") +
+    `<span class="chip">Agents : <b>${agents.length}</b></span>`;
+  $("msg").style.display = rows.length || AGENTS.length ? "none" : "block";
+  $("grid").style.display = "grid";
+  updateNow();
+}
+function updateNow() {
+  const line = $("nowline") || Object.assign(document.createElement("div"), { id:"nowline" });
+  const tracks = $("tracks"); if (!line.parentNode) tracks.appendChild(line);
+  const now = new Date(), mins = now.getHours()*60 + now.getMinutes();
+  const show = key(now) === key(day) && mins >= START*60 && mins <= END*60;
+  line.style.display = show ? "block" : "none";
+  if (show) { line.style.left = ((mins-START*60)/((END-START)*60)*100)+"%"; line.style.top = "0"; line.style.height = tracks.offsetHeight+"px"; }
+}
+function move(n) {
+  do { day.setDate(day.getDate()+n); } while (day.getDay() === 0 || day.getDay() === 6);
+  $("f-d1").value = key(day); render();
+}
+$("prev").onclick = () => move(-1);
+$("next").onclick = () => move(1);
+$("today").onclick = () => { day = new Date(); day.setHours(0,0,0,0); $("f-d1").value = key(day); render(); };
+setInterval(updateNow, 30000);
+window.addEventListener("resize", updateNow);
+
+/* ---------- Formulaire ---------- */
+function say(t, cls) { $("status").textContent = t; $("status").className = cls || ""; }
+function buildForm() {
+  $("f-agent").innerHTML = '<option value="">Choisir…</option>' + AGENTS.map(a => `<option>${a}</option>`).join("");
+  const times = []; for (let m = START*60; m <= END*60; m += 30) times.push(f2(m));
+  ["f-t1","f-t2"].forEach(id => $(id).innerHTML = times.map(t => `<option>${t}</option>`).join(""));
+  setTimes(PRESETS.day);
+  $("f-d1").value = key(day);
+  STATUTS.forEach(s => {
+    const b = document.createElement("button"); b.type = "button"; b.setAttribute("aria-pressed","false");
+    b.innerHTML = `<i class="dot" style="background:var(--${s.c})"></i>${s.v}`;
+    b.onclick = () => { chosen = s.v; [...$("f-statut").children].forEach(x => x.setAttribute("aria-pressed", x === b)); };
+    $("f-statut").appendChild(b);
+  });
+}
+function setTimes([a,b]) { $("f-t1").value = a; $("f-t2").value = b; }
+$("p-day").onclick = () => setTimes(PRESETS.day);
+$("p-am").onclick  = () => setTimes(PRESETS.am);
+$("p-pm").onclick  = () => setTimes(PRESETS.pm);
+
+$("add").onclick = async () => {
+  const agent = $("f-agent").value, d1 = $("f-d1").value, d2 = $("f-d2").value || d1;
+  if (!agent) return say("Choisissez un agent.", "err");
+  if (!chosen) return say("Choisissez un statut.", "err");
+  if (!d1) return say("Choisissez une date.", "err");
+  const s = new Date(d1+"T"+$("f-t1").value+":00").getTime()/1000;
+  const e = new Date(d2+"T"+$("f-t2").value+":00").getTime()/1000;
+  if (!(e > s)) return say("La fin doit être après le début.", "err");
+  const fields = grist.mapColumnNamesBack({ Agent:agent, Statut:chosen, Debut:s, Fin:e });
+  if (!fields) return say("Associez d’abord les colonnes dans le panneau de droite.", "err");
+  try {
+    await grist.getTable().create({ fields });
+    say("Ajouté ✔", "ok"); $("f-d2").value = "";
+  } catch (err) { say("Échec : "+(err.message || err), "err"); }
+};
+
+/* ---------- Suppression ---------- */
+function showDel() { $("del-txt").textContent = "Supprimer : "+selected.txt+" ?"; $("del").hidden = false; }
+$("del-no").onclick = () => { selected = null; $("del").hidden = true; render(); };
+$("del-ok").onclick = async () => {
+  try { await grist.getTable().destroy(selected.id); say("Supprimé ✔", "ok"); }
+  catch (err) { say("Échec : "+(err.message || err), "err"); }
+  selected = null; $("del").hidden = true;
+};
+
+/* ---------- Grist ---------- */
+buildForm();
+grist.ready({
+  requiredAccess: "full",
+  columns: [
+    { name:"Agent",  title:"Agent",  type:"Text,Choice" },
+    { name:"Statut", title:"Statut", type:"Text,Choice" },
+    { name:"Debut",  title:"Début (date et heure)", type:"DateTime" },
+    { name:"Fin",    title:"Fin (date et heure)",   type:"DateTime" }
+  ]
+});
+grist.onRecords(recs => {
+  const mapped = grist.mapColumnNames(recs);
+  if (mapped) { rows = mapped; render(); }
+  else { $("msg").style.display = "block"; $("msg").textContent = "Associez les colonnes dans le panneau de droite."; render(); }
+});
+</script>
+</body>
+</html>
